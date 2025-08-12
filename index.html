@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Typefall Game</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+    </style>
+    <!-- Phaser 3 Library -->
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<script>
+    // --- GAME CONFIGURATION ---
+    // This configuration object sets up the Phaser game.
+    const config = {
+        type: Phaser.AUTO, // Automatically choose between WebGL and Canvas rendering
+        width: window.innerWidth,
+        height: window.innerHeight,
+        parent: 'phaser-game', // The ID of the DOM element to attach the canvas to
+        scene: {
+            preload: preload,
+            create: create,
+            update: update
+        },
+        physics: {
+            default: 'matter', // Use the Matter.js physics engine
+            matter: {
+                gravity: { y: 0.98 }, // Set the global gravity
+                debug: false // Set to true to see physics bodies and collisions
+            }
+        }
+    };
+
+    // --- GLOBAL VARIABLES ---
+    let game;
+    let platform;
+    let goalBar;
+    let currentLetter;
+    let stackedLetters;
+    let scoreText;
+    let score = 0;
+    const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let gameState = 'START'; // Can be START, PLAYING, WIN, GAMEOVER
+
+    // --- PHASER SCENE FUNCTIONS ---
+
+    /**
+     * Preloads game assets.
+     * This function is called once before the game starts.
+     */
+    function preload() {
+        // No assets to preload for this game
+    }
+
+    /**
+     * Creates game objects and initializes the game state.
+     * This function is called once when the scene is created.
+     */
+    function create() {
+        // Set world bounds to prevent objects from leaving the screen sides
+        this.matter.world.setBounds(0, -200, config.width, config.height + 200);
+
+        // --- Create the Stage (Platform) ---
+        const platformWidth = config.width * 0.35; // Platform width is 35% of the viewport
+        const platformHeight = 20;
+        platform = this.matter.add.rectangle(
+            config.width / 2,
+            config.height - platformHeight / 2 - 20,
+            platformWidth,
+            platformHeight,
+            { isStatic: true, label: 'platform' } // Static body doesn't move
+        );
+        this.add.rectangle(platform.position.x, platform.position.y, platformWidth, platformHeight, 0x444444).setOrigin(0.5);
+
+        // --- Create the Goal Bar ---
+        const goalBarHeight = 15;
+        goalBar = this.matter.add.rectangle(config.width / 2, goalBarHeight, config.width, goalBarHeight, {
+            isStatic: true,
+            isSensor: true, // It detects collisions but doesn't cause them
+            label: 'goal'
+        });
+        // Add a visual for the goal bar
+        const goalGraphic = this.add.graphics({ fillStyle: { color: 0xffd700, alpha: 0.5 } });
+        goalGraphic.fillRect(0, 0, config.width, goalBarHeight * 2);
+        this.add.text(config.width / 2, goalBarHeight, 'GOAL', { fontSize: '16px', fill: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
+
+        // --- Create the Floor Sensor for Game Over ---
+        const floorHeight = 10;
+        const floor = this.matter.add.rectangle(config.width / 2, config.height - floorHeight / 2, config.width, floorHeight, {
+            isStatic: true,
+            isSensor: true,
+            label: 'floor'
+        });
+
+
+        // --- Initialize Game Elements ---
+        stackedLetters = this.add.group();
+        setupUI.call(this);
+
+        // --- Start Game Logic ---
+        if (gameState === 'START') {
+            displayStartMessage.call(this);
+        }
+        
+        // --- Collision Handling for Win/Loss Conditions ---
+        this.matter.world.on('collisionstart', (event) => {
+            if (gameState !== 'PLAYING') return;
+        
+            event.pairs.forEach(pair => {
+                const { bodyA, bodyB } = pair;
+        
+                const isLetterAndGoal = 
+                    (bodyA.label === 'letter' && bodyB.label === 'goal') ||
+                    (bodyB.label === 'letter' && bodyA.label === 'goal');
+                
+                const isLetterAndFloor =
+                    (bodyA.label === 'letter' && bodyB.label === 'floor') ||
+                    (bodyB.label === 'letter' && bodyA.label === 'floor');
+        
+                if (isLetterAndGoal) {
+                    // Use a small delay to make the win feel more natural
+                    this.time.delayedCall(100, () => endGame.call(this, 'WIN'), [], this);
+                } else if (isLetterAndFloor) {
+                    // End the game immediately if a letter hits the floor
+                    endGame.call(this, 'GAMEOVER');
+                }
+            });
+        });
+
+        // --- Handle Window Resizing ---
+        window.addEventListener('resize', () => {
+            this.scale.resize(window.innerWidth, window.innerHeight);
+            // For this game, restarting the scene is a simple way to handle layout changes.
+            this.scene.restart();
+            gameState = 'START';
+        });
+    }
+
+    /**
+     * The main game loop, called on every frame.
+     * The win/loss logic is now handled by collision events, so this is empty.
+     */
+    function update() {
+        // No per-frame checks needed anymore
+    }
+
+    // --- GAME LOGIC FUNCTIONS ---
+
+    /**
+     * Starts a new game session.
+     */
+    function startGame() {
+        gameState = 'PLAYING';
+
+        // Clear any existing messages
+        if (this.messageBox) this.messageBox.destroy();
+
+        // Reset score
+        score = 0;
+        scoreText.setText(`Stacked: ${score}`);
+
+        // Clear any old letters
+        stackedLetters.getChildren().forEach(child => child.destroy());
+        stackedLetters.clear();
+
+
+        // Place the first letter automatically
+        placeFirstLetter.call(this);
+
+        // Generate the next letter for the player to control
+        generateNewLetter.call(this);
+    }
+
+    /**
+     * Places the very first letter on the platform to start the stack.
+     */
+    function placeFirstLetter() {
+        const randomChar = Phaser.Math.RND.pick(alphabet.split(''));
+        const firstLetter = createLetter.call(this, config.width / 2, config.height - 100, randomChar);
+        firstLetter.setStatic(false); // Let it settle
+        stackedLetters.add(firstLetter);
+        updateScore();
+    }
+
+    /**
+     * Generates a new letter for the player to drop.
+     */
+    function generateNewLetter() {
+        if (gameState !== 'PLAYING') return;
+
+        const randomChar = Phaser.Math.RND.pick(alphabet.split(''));
+        // Create the letter at the top, initially static and draggable
+        currentLetter = createLetter.call(this, config.width / 2, 80, randomChar);
+        currentLetter.setStatic(true); // Make it static so it doesn't fall immediately
+        currentLetter.setInteractive(); // Allow player to interact with it
+        this.input.setDraggable(currentLetter);
+    }
+
+
+    /**
+     * Creates a letter object with physics properties.
+     * @param {number} x - The initial x-coordinate.
+     * @param {number} y - The initial y-coordinate.
+     * @param {string} char - The character to display.
+     * @returns {Phaser.GameObjects.Text} The created letter object with a MatterJS body.
+     */
+    function createLetter(x, y, char) {
+        const letterStyle = { font: '72px Courier', fill: '#FFFFFF', fontStyle: 'bold' };
+        
+        // Create a standard Phaser Text object first.
+        const letterTextObject = this.add.text(x, y, char, letterStyle).setOrigin(0.5);
+
+        // Now, use matter.add.gameObject to give the Text object a physics body.
+        const letter = this.matter.add.gameObject(letterTextObject, {
+            label: 'letter', // Add a label for collision detection
+            shape: {
+                type: 'rectangle',
+                width: letterTextObject.width,
+                height: letterTextObject.height
+            },
+            chamfer: { radius: 3 }, // Slightly rounded corners for better stacking
+            restitution: 0.05,      // Bounciness
+            friction: 1.9,         // Friction between objects
+        });
+
+        return letter;
+    }
+
+    /**
+     * Handles the dropping of a letter by the player.
+     */
+    function dropLetter() {
+        if (!currentLetter) return;
+
+        // Make the letter a dynamic physics body so it falls
+        currentLetter.setStatic(false);
+        
+        // Disable dragging *before* removing the interactive property.
+        this.input.setDraggable(currentLetter, false);
+        currentLetter.removeInteractive(); 
+
+        stackedLetters.add(currentLetter);
+        updateScore();
+        
+        currentLetter = null; // Clear the reference
+
+        // Generate the next letter after a short delay
+        this.time.delayedCall(500, generateNewLetter, [], this);
+    }
+
+
+    /**
+     * Ends the game and displays the appropriate message.
+     * @param {string} result - The outcome ('WIN' or 'GAMEOVER').
+     */
+    function endGame(result) {
+        if (gameState !== 'PLAYING' && gameState !== 'START') return; // Prevent this from running multiple times
+        gameState = result;
+        
+        if (currentLetter) {
+            currentLetter.destroy();
+            currentLetter = null;
+        }
+
+        const message = result === 'WIN' ? 'You Win!' : 'Game Over';
+        displayEndMessage.call(this, message);
+    }
+
+    // --- UI FUNCTIONS ---
+
+    /**
+     * Sets up the initial UI elements like the score display.
+     */
+    function setupUI() {
+        // --- Score Display ---
+        scoreText = this.add.text(20, 20, 'Stacked: 0', {
+            fontSize: '28px',
+            fill: '#fff',
+            fontFamily: 'Courier',
+            fontStyle: 'bold'
+        }).setOrigin(0);
+
+        // --- Drag and Drop Event Handlers ---
+        this.input.on('drag', (pointer, gameObject, dragX, dragY) => {
+            // Allow dragging in all directions.
+            gameObject.setPosition(dragX, dragY);
+        });
+
+        this.input.on('dragend', (pointer, gameObject) => {
+            // When the player releases the mouse, drop the letter
+            if (gameObject === currentLetter) {
+               dropLetter.call(this);
+            }
+        });
+    }
+
+    /**
+     * Displays the initial "Start Game" message.
+     */
+    function displayStartMessage() {
+        const boxWidth = 300;
+        const boxHeight = 150;
+        this.messageBox = this.add.container(config.width / 2, config.height / 2);
+
+        const graphics = this.add.graphics();
+        graphics.fillStyle(0xffffff, 0.9);
+        graphics.fillRoundedRect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight, 16);
+        graphics.lineStyle(2, 0x333333, 1);
+        graphics.strokeRoundedRect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight, 16);
+
+        const title = this.add.text(0, -40, 'TYPEFALL', { fontSize: '28px', fill: '#333', fontFamily: 'Arial', fontStyle: 'bold' }).setOrigin(0.5);
+
+        const startButton = createButton.call(this, 0, 30, 'Start Game', () => startGame.call(this));
+
+        this.messageBox.add([graphics, title, startButton]);
+    }
+
+    /**
+     * Displays the final "You Win!" or "Game Over" message.
+     * @param {string} message - The message to display.
+     */
+    function displayEndMessage(message) {
+        const boxWidth = 300;
+        const boxHeight = 150;
+        this.messageBox = this.add.container(config.width / 2, config.height / 2);
+
+        const graphics = this.add.graphics();
+        graphics.fillStyle(0xffffff, 0.9);
+        graphics.fillRoundedRect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight, 16);
+        graphics.lineStyle(2, 0x333333, 1);
+        graphics.strokeRoundedRect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight, 16);
+
+        const title = this.add.text(0, -40, message, { fontSize: '32px', fill: '#333', fontFamily: 'Arial', fontStyle: 'bold' }).setOrigin(0.5);
+
+        const restartButton = createButton.call(this, 0, 30, 'Restart', () => {
+            // Reset the scene to start over
+            this.scene.restart();
+            gameState = 'START';
+        });
+
+        this.messageBox.add([graphics, title, restartButton]);
+    }
+
+    /**
+     * Helper function to create a styled, interactive button.
+     * @param {number} x - The x-coordinate relative to its container.
+     * @param {number} y - The y-coordinate relative to its container.
+     * @param {string} text - The text to display on the button.
+     * @param {function} callback - The function to call when the button is clicked.
+     * @returns {Phaser.GameObjects.Container} The button container.
+     */
+    function createButton(x, y, text, callback) {
+        const button = this.add.container(x, y);
+        const buttonText = this.add.text(0, 0, text, { fontSize: '20px', fill: '#fff', fontFamily: 'Arial', fontStyle: 'bold' }).setOrigin(0.5);
+        const buttonWidth = buttonText.width + 40;
+        const buttonHeight = buttonText.height + 20;
+
+        const buttonBg = this.add.graphics();
+        buttonBg.fillStyle(0x007bff, 1); // A nice blue color
+        buttonBg.fillRoundedRect(-buttonWidth / 2, -buttonHeight / 2, buttonWidth, buttonHeight, 10);
+
+        button.add([buttonBg, buttonText]);
+        button.setSize(buttonWidth, buttonHeight);
+        button.setInteractive({ useHandCursor: true });
+
+        button.on('pointerdown', callback);
+        button.on('pointerover', () => {
+            const bg = button.getAt(0);
+            bg.clear().fillStyle(0x0056b3, 1).fillRoundedRect(-buttonWidth / 2, -buttonHeight / 2, buttonWidth, buttonHeight, 10);
+        });
+        button.on('pointerout', () => {
+            const bg = button.getAt(0);
+            bg.clear().fillStyle(0x007bff, 1).fillRoundedRect(-buttonWidth / 2, -buttonHeight / 2, buttonWidth, buttonHeight, 10);
+        });
+
+        return button;
+    }
+
+    /**
+     * Updates the score and the score text display.
+     */
+    function updateScore() {
+        score++;
+        scoreText.setText(`Stacked: ${score}`);
+    }
+
+
+    // --- INITIALIZE THE GAME ---
+    // This line creates the new Phaser Game instance and starts the game.
+    game = new Phaser.Game(config);
+
+</script>
+</body>
+</html>
+
